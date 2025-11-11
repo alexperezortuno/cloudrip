@@ -3,126 +3,131 @@ package main
 import (
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"os/signal"
-	"strings"
-	"sync"
 	"syscall"
 
-	"github.com/alexperezortuno/cloudrip/internal/application/service"
-	"github.com/alexperezortuno/cloudrip/internal/domain"
-	"github.com/alexperezortuno/cloudrip/internal/infrastructure/cli"
+	"github.com/alexperezortuno/cloudrip/internal/core/domain"
+	"github.com/alexperezortuno/cloudrip/internal/core/service"
+	"github.com/alexperezortuno/cloudrip/internal/infrastructure/cloudflare"
+	"github.com/alexperezortuno/cloudrip/internal/infrastructure/config"
+	"github.com/alexperezortuno/cloudrip/internal/infrastructure/dns"
 	"github.com/alexperezortuno/cloudrip/internal/infrastructure/file"
+	"github.com/alexperezortuno/cloudrip/internal/infrastructure/logging"
+	"github.com/alexperezortuno/cloudrip/internal/infrastructure/progress"
+	"github.com/alexperezortuno/cloudrip/internal/interfaces/cli"
+	"github.com/alexperezortuno/cloudrip/internal/interfaces/http"
+	"github.com/rs/zerolog"
 )
 
 func main() {
+	// Configurar logging
+	logger := logging.NewLogger()
+
+	// Parsear flags de CLI
+	cliConfig, err := cli.ParseFlags()
+	if err != nil {
+		logger.Fatal().Err(err).Msg("Error parseando flags")
+	}
+
+	// Health check rápido
+	if cliConfig.HealthCheck {
+		fmt.Println("✅ Health check: OK")
+		os.Exit(0)
+	}
+
+	// Crear configuración por defecto
+	if cliConfig.CreateConfig != "" {
+		configManager := config.NewConfigManager()
+		if err := configManager.CreateDefaultConfig(cliConfig.CreateConfig); err != nil {
+			logger.Fatal().Err(err).Msg("Error creando archivo de configuración")
+		}
+		fmt.Printf("✅ Archivo de configuración creado: %s\n", cliConfig.CreateConfig)
+		os.Exit(0)
+	}
+
+	// Cargar configuración
+	configManager := config.NewConfigManager()
+	var cfg *domain.ScannerConfig
+
+	if cliConfig.ConfigFile != "" {
+		cfg, err = configManager.LoadFromFile(cliConfig.ConfigFile)
+		if err != nil {
+			logger.Warn().Err(err).Msg("Error cargando configuración desde archivo, usando CLI flags")
+			cfg = &cliConfig.ScannerConfig
+		} else {
+			logger.Info().Str("config_file", cliConfig.ConfigFile).Msg("Configuración cargada desde archivo")
+		}
+	} else {
+		cfg = &cliConfig.ScannerConfig
+	}
+
+	// Validar configuración
+	if err := configManager.Validate(cfg); err != nil {
+		logger.Fatal().Err(err).Msg("Configuración inválida")
+	}
+
+	// Mostrar métricas y salir
+	if cliConfig.ShowMetrics {
+		showDefaultMetrics()
+		os.Exit(0)
+	}
+
+	// Configurar contexto con cancelación
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	// Parse CLI flags
-	parser := cli.NewCLIParser()
-	config, err := parser.ParseFlags()
+	// Inicializar dependencias
+	dnsResolver := dns.NewResolver(logger)
+	cloudflareService := cloudflare.NewService(logger)
+	fileRepo := file.NewRepository(logger)
+	progressReporter := progress.NewReporter()
+	metricsCollector := service.NewMetricsCollector()
+	healthChecker := service.NewHealthChecker(metricsCollector)
+
+	// Crear servicio de escaneo
+	scanner := service.NewScanner(
+		dnsResolver,
+		cloudflareService,
+		fileRepo,
+		progressReporter,
+		metricsCollector,
+		healthChecker,
+		logger,
+	)
+
+	// Iniciar servidor HTTP en segundo plano
+	//go startHTTPServer(scanner, logger)
+
+	// Ejecutar escaneo
+	//startTime := time.Now()
+	result, err := scanner.Scan(ctx, *cfg)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		logger.Error().Err(err).Msg("Error durante el escaneo")
+		os.Exit(1)
 	}
 
-	// Rango Cloudflare
-	var ranges domain.CfRanges
-	if config.NoFetchCF {
-		ranges = file.LoadDefaultCFRanges()
-		fmt.Println("[INFO] Usando CIDRs Cloudflare por defecto (sin fetch).")
-	} else {
-		fmt.Println("[INFO] Obteniendo CIDRs Cloudflare oficiales...")
-		ranges, err = file.FetchCFRanges(ctx)
-		if err != nil {
-			fmt.Printf("[WARN] No se pudo obtener desde API: %v. Usando defaults.\n", err)
-			ranges = file.LoadDefaultCFRanges()
-		} else if len(ranges.IPv4) == 0 && len(ranges.IPv6) == 0 {
-			fmt.Println("[WARN] Respuesta vacía. Usando defaults.")
-			ranges = file.LoadDefaultCFRanges()
-		}
+	logger.Info().
+		Int("found", result.TotalFound).
+		Dur("duration", result.Duration).
+		Msg("Escaneo completado exitosamente")
+}
+
+func startHTTPServer(scanner *service.Scanner, logger zerolog.Logger) {
+	server := http.NewServer(scanner, logger, "8080")
+	if err := server.Start(); err != nil {
+		logger.Error().Err(err).Msg("Error iniciando servidor HTTP")
 	}
+}
 
-	// Resolver
-	resolver := net.Resolver{}
-
-	// Canales y pool
-	jobs := make(chan domain.Job)
-	results := make(chan domain.ResultEntry, 1024)
-
-	var wg sync.WaitGroup
-	opts := domain.ResolverOptions{
-		Retries: config.Retries,
-		Backoff: config.Backoff,
-		Timeout: config.Timeout,
-	}
-
-	for i := 0; i < config.Threads; i++ {
-		wg.Add(1)
-		go service.Worker(ctx, &wg, jobs, results, &resolver, config.Domain, ranges, config.IncludeCF, config.FollowCNAME, config.Delay, opts)
-	}
-
-	// feeder
-	go func() {
-		defer close(jobs)
-		for _, s := range config.SubDomain {
-			select {
-			case <-ctx.Done():
-				return
-			case jobs <- domain.Job{Subdomain: s}:
-			}
-		}
-	}()
-
-	// collector
-	aggregated := make(map[string][]domain.ResultEntry)
-	var collectWg sync.WaitGroup
-	collectWg.Add(1)
-	go func() {
-		defer collectWg.Done()
-		for r := range results {
-			fmt.Printf("[FOUND] %s -> %s (%s)\n", r.FQDN, r.IP, r.Type)
-			list := aggregated[r.FQDN]
-			dup := false
-			for _, e := range list {
-				if e.IP == r.IP && e.Type == r.Type {
-					dup = true
-					break
-				}
-			}
-			if !dup {
-				aggregated[r.FQDN] = append(aggregated[r.FQDN], r)
-			}
-		}
-	}()
-
-	// esperar workers
-	wg.Wait()
-	// cerrar results para que collector termine
-	close(results)
-	collectWg.Wait()
-
-	// guardar si aplica
-	if config.Output != "" {
-		switch strings.ToLower(config.OutputFmt) {
-		case "json":
-			if err := file.SaveJSON(config.Output, aggregated); err != nil {
-				fmt.Fprintf(os.Stderr, "[ERROR] Guardando JSON: %v\n", err)
-				os.Exit(1)
-			}
-		case "text":
-			if err := file.SaveText(config.Output, aggregated); err != nil {
-				fmt.Fprintf(os.Stderr, "[ERROR] Guardando texto: %v\n", err)
-				os.Exit(1)
-			}
-		default:
-			fmt.Fprintln(os.Stderr, "[ERROR] --output-format debe ser text|json")
-			os.Exit(2)
-		}
-		fmt.Printf("[INFO] Resultados guardados en %s (formato=%s)\n", config.Output, config.OutputFmt)
-	}
-
-	fmt.Println("[INFO] Operación finalizada.")
+func showDefaultMetrics() {
+	fmt.Println("📊 Métricas por defecto:")
+	fmt.Println("------------------------")
+	fmt.Println("Threads: 10")
+	fmt.Println("Retries: 2")
+	fmt.Println("Timeout: 5s")
+	fmt.Println("Backoff: 500ms")
+	fmt.Println("Formato salida: text")
+	fmt.Println("Wordlist: dom.txt")
+	fmt.Println("------------------------")
 }
