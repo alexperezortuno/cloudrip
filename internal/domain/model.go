@@ -44,7 +44,7 @@ type Job struct {
 
 type ScannerConfig struct {
 	Domain      string
-	WordList    string
+	Wordlist    string
 	Threads     int
 	Retries     int
 	Backoff     time.Duration

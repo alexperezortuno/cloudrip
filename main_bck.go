@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
@@ -79,7 +80,15 @@ func fetchCFRanges(ctx context.Context) (cfRanges, error) {
 	if err != nil {
 		return cfRanges{}, err
 	}
-	defer res.Body.Close()
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			_, err := fmt.Fprintf(os.Stderr, "[WARN] Error cerrando body: %v\n", err)
+			if err != nil {
+				return
+			}
+		}
+	}(res.Body)
 
 	if res.StatusCode != http.StatusOK {
 		return cfRanges{}, fmt.Errorf("cloudflare api status: %s", res.Status)
@@ -121,7 +130,12 @@ func loadWordlist(path string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func(f *os.File) {
+		err := f.Close()
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "[WARN] Error cerrando wordlist: %v\n", err)
+		}
+	}(f)
 
 	var lines []string
 	sc := bufio.NewScanner(f)
@@ -223,7 +237,7 @@ func worker(
 				}
 			}
 
-			fqdn := jb.subdomain
+			var fqdn string
 			if jb.subdomain != "" {
 				fqdn = jb.subdomain + "." + domain
 			} else {
@@ -276,6 +290,7 @@ func worker(
 								}
 								if !isCF {
 									// no short-circuit here; we still emit all if includeCF requested
+									fmt.Printf("[INFO] Ignore %s -> %s (%s)\n", fqdn, ip, ipType)
 								}
 							}
 						}
@@ -291,7 +306,12 @@ func saveText(path string, m map[string][]resultEntry) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func(f *os.File) {
+		err := f.Close()
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "[WARN] Error cerrando salida: %v\n", err)
+		}
+	}(f)
 
 	// salida ordenada por fqdn
 	var keys []string
@@ -310,7 +330,7 @@ func saveText(path string, m map[string][]resultEntry) error {
 			return entries[i].Type < entries[j].Type
 		})
 		for _, e := range entries {
-			fmt.Fprintf(w, "%s -> %s (%s)\n", e.FQDN, e.IP, e.Type)
+			_, _ = fmt.Fprintf(w, "%s -> %s (%s)\n", e.FQDN, e.IP, e.Type)
 		}
 	}
 	return w.Flush()
@@ -321,7 +341,12 @@ func saveJSON(path string, m map[string][]resultEntry) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func(f *os.File) {
+		err := f.Close()
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "[WARN] Error cerrando salida: %v\n", err)
+		}
+	}(f)
 
 	var flat []resultEntry
 	var keys []string
@@ -361,7 +386,7 @@ func main() {
 	flag.Parse()
 
 	if *domain == "" {
-		fmt.Fprintln(os.Stderr, "Error: -d <domain> es requerido")
+		_, _ = fmt.Fprintln(os.Stderr, "Error: -d <domain> es requerido")
 		os.Exit(2)
 	}
 
@@ -372,7 +397,7 @@ func main() {
 	// Cargar wordlist
 	subs, err := loadWordlist(*wordlist)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[ERROR] Wordlist: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "[ERROR] Wordlist: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Printf("[INFO] Cargados %d subdominios de %s\n", len(subs), *wordlist)
@@ -459,16 +484,16 @@ func main() {
 		switch strings.ToLower(*outputFmt) {
 		case "json":
 			if err := saveJSON(*output, aggregated); err != nil {
-				fmt.Fprintf(os.Stderr, "[ERROR] Guardando JSON: %v\n", err)
+				_, _ = fmt.Fprintf(os.Stderr, "[ERROR] Guardando JSON: %v\n", err)
 				os.Exit(1)
 			}
 		case "text":
 			if err := saveText(*output, aggregated); err != nil {
-				fmt.Fprintf(os.Stderr, "[ERROR] Guardando texto: %v\n", err)
+				_, _ = fmt.Fprintf(os.Stderr, "[ERROR] Guardando texto: %v\n", err)
 				os.Exit(1)
 			}
 		default:
-			fmt.Fprintln(os.Stderr, "[ERROR] --output-format debe ser text|json")
+			_, _ = fmt.Fprintln(os.Stderr, "[ERROR] --output-format debe ser text|json")
 			os.Exit(2)
 		}
 		fmt.Printf("[INFO] Resultados guardados en %s (formato=%s)\n", *output, *outputFmt)
