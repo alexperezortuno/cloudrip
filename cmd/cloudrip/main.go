@@ -16,8 +16,6 @@ import (
 	"github.com/alexperezortuno/cloudrip/internal/infrastructure/logging"
 	"github.com/alexperezortuno/cloudrip/internal/infrastructure/progress"
 	"github.com/alexperezortuno/cloudrip/internal/interfaces/cli"
-	"github.com/alexperezortuno/cloudrip/internal/interfaces/http"
-	"github.com/rs/zerolog"
 )
 
 func main() {
@@ -113,12 +111,13 @@ func main() {
 		Msg("Escaneo completado exitosamente")
 }
 
-func startHTTPServer(scanner *service.Scanner, logger zerolog.Logger) {
-	server := http.NewServer(scanner, logger, "8080")
-	if err := server.Start(); err != nil {
-		logger.Error().Err(err).Msg("Error iniciando servidor HTTP")
-	}
-}
+// TODO: Implement this
+//func startHTTPServer(scanner *service.Scanner, logger zerolog.Logger) {
+//	server := http.NewServer(scanner, logger, "8080")
+//	if err := server.Start(); err != nil {
+//		logger.Error().Err(err).Msg("Error iniciando servidor HTTP")
+//	}
+//}
 
 func showDefaultMetrics() {
 	fmt.Println("📊 Métricas por defecto:")

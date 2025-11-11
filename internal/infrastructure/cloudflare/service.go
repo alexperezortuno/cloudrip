@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/netip"
 	"time"
@@ -77,7 +78,12 @@ func (s *Service) fetchRanges(ctx context.Context) (domain.CFRanges, error) {
 		s.logger.Warn().Err(err).Msg("Error obteniendo rangos desde API, usando defaults")
 		return s.loadDefaultRanges(), nil
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			s.logger.Warn().Err(err).Msg("Error cerrando body de respuesta")
+		}
+	}(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		s.logger.Warn().Int("status", resp.StatusCode).Msg("API retornó error, usando defaults")

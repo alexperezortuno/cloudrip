@@ -29,7 +29,12 @@ func (r *Repository) LoadWordlist(path string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("abriendo archivo: %w", err)
 	}
-	defer file.Close()
+	defer func(file *os.File) {
+		err := file.Close()
+		if err != nil {
+			r.logger.Warn().Err(err).Msg("Error cerrando archivo")
+		}
+	}(file)
 
 	var lines []string
 	scanner := bufio.NewScanner(file)
@@ -73,7 +78,12 @@ func (r *Repository) saveJSON(results map[string][]domain.ResultEntry, path stri
 	if err != nil {
 		return fmt.Errorf("creando archivo: %w", err)
 	}
-	defer file.Close()
+	defer func(file *os.File) {
+		err := file.Close()
+		if err != nil {
+			r.logger.Warn().Err(err).Msg("Error cerrando archivo")
+		}
+	}(file)
 
 	// Convertir a slice plana y ordenar
 	var flatResults []domain.ResultEntry
@@ -109,10 +119,20 @@ func (r *Repository) saveText(results map[string][]domain.ResultEntry, path stri
 	if err != nil {
 		return fmt.Errorf("creando archivo: %w", err)
 	}
-	defer file.Close()
+	defer func(file *os.File) {
+		err := file.Close()
+		if err != nil {
+			r.logger.Warn().Err(err).Msg("Error cerrando archivo")
+		}
+	}(file)
 
 	writer := bufio.NewWriter(file)
-	defer writer.Flush()
+	defer func(writer *bufio.Writer) {
+		err := writer.Flush()
+		if err != nil {
+			r.logger.Warn().Err(err).Msg("Error guardando resultados")
+		}
+	}(writer)
 
 	// Ordenar resultados
 	keys := make([]string, 0, len(results))
@@ -130,11 +150,11 @@ func (r *Repository) saveText(results map[string][]domain.ResultEntry, path stri
 			return entries[i].Type < entries[j].Type
 		})
 		for _, entry := range entries {
-			fmt.Fprintf(writer, "%s -> %s (%s)\n", entry.FQDN, entry.IP, entry.Type)
+			r.logger.Info().Str("fqdn", entry.FQDN).Str("ip", entry.IP).Str("type", entry.Type).Msg("Result")
 		}
 	}
 
-	r.logger.Debug().Str("path", path).Int("entries", len(results)).Msg("Resultados guardados en texto")
+	r.logger.Debug().Str("path", path).Int("entries", len(results)).Msg("Results saved to text file")
 	return nil
 }
 
