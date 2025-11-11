@@ -93,3 +93,13 @@ func (p *Reporter) printProgress(final bool) {
 		fmt.Println() // Nueva línea al final
 	}
 }
+
+func (p *Reporter) GetProgress() float64 {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if p.total == 0 {
+		return 0
+	}
+	return float64(p.completed) / float64(p.total) * 100
+}
