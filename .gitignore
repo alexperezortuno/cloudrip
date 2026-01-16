@@ -23,6 +23,9 @@ profile.cov
 # Go workspace file
 go.work
 go.work.sum
+go.sum
+*.txt
+*.json
 
 # env file
 .env
@@ -31,3 +34,4 @@ go.work.sum
 .idea/
 .vscode/
 bin/*
+config.yaml
