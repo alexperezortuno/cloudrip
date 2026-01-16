@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/netip"
 	"os"
@@ -46,7 +47,12 @@ func LoadWordlist(path string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func(f *os.File) {
+		err := f.Close()
+		if err != nil {
+			return
+		}
+	}(f)
 
 	var lines []string
 	sc := bufio.NewScanner(f)
@@ -82,7 +88,12 @@ func FetchCFRanges(ctx context.Context) (domain.CfRanges, error) {
 	if err != nil {
 		return domain.CfRanges{}, err
 	}
-	defer res.Body.Close()
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			return
+		}
+	}(res.Body)
 
 	if res.StatusCode != http.StatusOK {
 		return domain.CfRanges{}, fmt.Errorf("cloudflare api status: %s", res.Status)
